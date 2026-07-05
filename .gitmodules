@@ -3,4 +3,4 @@
 	url = https://github.com/hiddify/hiddify-sing-box
 [submodule "ray2sing"]
 	path = ray2sing
-	url = git@github.com:hiddify/ray2sing.git
+	url = https://github.com/codesjd/ray2sing
