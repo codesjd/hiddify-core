@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 
 	"github.com/hiddify/hiddify-core/v2/config"
@@ -139,7 +141,17 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	if in.DelayStart {
 		<-time.After(1000 * time.Millisecond)
 	}
-	libbox.SetMemoryLimit(C.IsIos || !in.DisableMemoryLimit)
+	// libbox.SetMemoryLimit(enabled bool) was removed - the library now
+	// only sets a memory limit once, internally, from Setup()'s
+	// OomMemoryLimit option (see hiddify-sing-box's experimental/libbox/
+	// setup.go). There's no numeric value available at this call site to
+	// reapply an "enabled" limit with, so this only preserves the
+	// explicit-disable half of the original behavior; the enabled case
+	// leaves whatever Setup() already configured in place rather than
+	// guessing a cap.
+	if !(C.IsIos || !in.DisableMemoryLimit) {
+		debug.SetMemoryLimit(math.MaxInt64)
+	}
 	instance, err := NewService(ctx, *options)
 	if err != nil {
 		return errorWrapper(MessageType_START_SERVICE, err)
