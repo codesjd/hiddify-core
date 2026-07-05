@@ -189,7 +189,7 @@ func setOutbounds(options *option.Options, input *option.Options, opt *HiddifyOp
 			return fmt.Errorf("failed to generate warp config: %v", err)
 		}
 		out.Tag = WARPConfigTag
-		if opts, ok := out.Options.(*option.WARPEndpointOptions); ok {
+		if opts, ok := out.Options.(*option.WireGuardWARPEndpointOptions); ok {
 			if opt.Warp.Mode == "warp_over_proxy" {
 				opts.Detour = OutboundSelectTag
 				opts.MTU = 1280
@@ -214,7 +214,7 @@ func setOutbounds(options *option.Options, input *option.Options, opt *HiddifyOp
 		}
 		if opt.Warp.EnableWarp {
 			if end.Type == C.TypeWARP {
-				if opts, ok := end.Options.(*option.WARPEndpointOptions); ok {
+				if opts, ok := end.Options.(*option.WireGuardWARPEndpointOptions); ok {
 					if opts.UniqueIdentifier == "p1" {
 						continue
 					}
