@@ -61,10 +61,10 @@ func parseConfigContent(ctx context.Context, content []byte, debug bool, configO
 	var tmpJsonResult any
 	jsonDecoder := json.NewDecoder(SJ.NewCommentFilter(bytes.NewReader(content)))
 	if err := jsonDecoder.Decode(&tmpJsonResult); err == nil {
-		fmt.Printf("Convert using json\n")
-		if tmpJsonObj, ok := tmpJsonResult.(map[string]interface{}); ok {
+		if tmpJsonObj, ok := tmpJsonResult.(map[string]interface{}); ok && looksLikeSingboxSchema(tmpJsonObj) {
+			fmt.Printf("Convert using json\n")
 			if tmpJsonObj["outbounds"] == nil && tmpJsonObj["endpoints"] == nil {
-				jsonObj["outbounds"] = []interface{}{jsonObj}
+				jsonObj["outbounds"] = []interface{}{tmpJsonObj}
 			} else {
 				if fullConfig || (configOpt != nil && configOpt.EnableFullConfig) {
 					jsonObj = tmpJsonObj
@@ -77,15 +77,21 @@ func parseConfigContent(ctx context.Context, content []byte, debug bool, configO
 					}
 				}
 			}
+
+			newContent, _ := json.MarshalIndent(jsonObj, "", "  ")
+
+			return patchConfigStr(ctx, newContent, "SingboxParser", configOpt)
 		} else if jsonArray, ok := tmpJsonResult.([]map[string]interface{}); ok {
 			jsonObj["outbounds"] = jsonArray
-		} else {
-			return nil, fmt.Errorf("[SingboxParser] Incorrect Json Format")
+
+			newContent, _ := json.MarshalIndent(jsonObj, "", "  ")
+
+			return patchConfigStr(ctx, newContent, "SingboxParser", configOpt)
 		}
-
-		newContent, _ := json.MarshalIndent(jsonObj, "", "  ")
-
-		return patchConfigStr(ctx, newContent, "SingboxParser", configOpt)
+		// Valid JSON, but not sing-box's outbound schema - most commonly a raw Xray-core config
+		// (which also has a top-level "outbounds" key, just with "protocol"-shaped entries
+		// instead of sing-box's "type"-shaped ones). Fall through to the clash/ray2sing parsers
+		// below instead of forcing it through the sing-box path, where it can only fail.
 	}
 
 	fmt.Printf("Convert using clash\n")
@@ -112,6 +118,37 @@ func parseConfigContent(ctx context.Context, content []byte, debug bool, configO
 	}
 
 	return nil, fmt.Errorf("unable to determine config format")
+}
+
+// looksLikeSingboxSchema reports whether a decoded JSON object matches sing-box's config schema
+// well enough to be worth unmarshalling as one. Sing-box and Xray-core configs share several
+// top-level key names (both use "outbounds", for instance), so the mere presence of an
+// "outbounds" key isn't enough to tell them apart - only the shape of the entries is: sing-box
+// identifies each outbound's kind with a "type" field, while Xray-core uses "protocol" instead
+// (with the real per-protocol settings nested under "settings"/"streamSettings"). A raw Xray-core
+// config would otherwise get force-fit through the sing-box unmarshaller here and fail with a
+// confusing schema error, instead of falling through to a parser that actually understands it.
+func looksLikeSingboxSchema(obj map[string]interface{}) bool {
+	outboundsRaw, ok := obj["outbounds"]
+	if !ok {
+		return true
+	}
+	outboundsArr, ok := outboundsRaw.([]interface{})
+	if !ok {
+		return true
+	}
+	for _, item := range outboundsArr {
+		entry, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		_, hasProtocol := entry["protocol"]
+		_, hasType := entry["type"]
+		if hasProtocol && !hasType {
+			return false
+		}
+	}
+	return true
 }
 
 func patchConfigStr(ctx context.Context, content []byte, name string, configOpt *HiddifyOptions) (*option.Options, error) {
