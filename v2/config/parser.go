@@ -6,7 +6,9 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/hiddify/ray2sing/ray2sing"
 	C "github.com/sagernet/sing-box/constant"
@@ -64,6 +66,11 @@ func parseConfigContent(ctx context.Context, content []byte, debug bool, configO
 	if err := jsonDecoder.Decode(&tmpJsonResult); err == nil {
 		if tmpJsonObj, ok := tmpJsonResult.(map[string]interface{}); ok && looksLikeSingboxSchema(tmpJsonObj) {
 			fmt.Printf("Convert using json\n")
+			migrateLegacyDNSOutbounds(tmpJsonObj)
+			if dns, ok := tmpJsonObj["dns"].(map[string]interface{}); ok {
+				migrateLegacyDNSServers(dns)
+			}
+			migrateLegacyInboundSniffFields(tmpJsonObj)
 			if tmpJsonObj["outbounds"] == nil && tmpJsonObj["endpoints"] == nil {
 				jsonObj["outbounds"] = []interface{}{tmpJsonObj}
 			} else {
@@ -124,6 +131,197 @@ func parseConfigContent(ctx context.Context, content []byte, debug bool, configO
 	}
 
 	return nil, fmt.Errorf("unable to determine config format")
+}
+
+// migrateLegacyDNSServers rewrites the pre-1.12 DNS server format (identified by a bare "address"
+// URL, e.g. "tcp://1.1.1.1") into the current "type"+"server" shape, and renames the per-server
+// "address_resolver" field to "domain_resolver" (see migration.md, "Migrate to new DNS server
+// formats" / "Servers with domain address"). Only handles the schemes with a direct type+server
+// equivalent (local/tcp/udp/tls/https/quic/h3) - "rcode://", "fakeip", and "dhcp://" servers have
+// no server-level equivalent at all now (rcode:// becomes a DNS rule action, fakeip needs its
+// top-level "dns.fakeip" block merged in, dhcp needs an "interface" field derived from the
+// address), so rather than guess at those structural rewrites, such servers are dropped from the
+// list entirely - same reasoning as migrateLegacyDNSOutbounds: a config that fails to parse can't
+// use that server anyway, so removing it (and leaving anything that referenced its tag to fall
+// back to the DNS config's "final" server) is strictly better than a hard failure.
+//
+// The per-server "strategy" field is also dropped: it's a hard unknown-field error under the new
+// schema, and its replacement is context-dependent (migration.md moves it to either the top-level
+// "dns.strategy" default or a specific DNS rule's "strategy", depending on which server it was on)
+// in a way that can't be inferred generically here. Losing a non-default per-server strategy
+// override is a real, known gap, but strictly better than the config not parsing at all.
+func migrateLegacyDNSServers(dns map[string]interface{}) {
+	servers, ok := dns["servers"].([]interface{})
+	if !ok {
+		return
+	}
+	filtered := servers[:0]
+	for _, item := range servers {
+		server, ok := item.(map[string]interface{})
+		if !ok {
+			filtered = append(filtered, item)
+			continue
+		}
+		if _, hasType := server["type"]; hasType {
+			filtered = append(filtered, item)
+			continue
+		}
+		addr, ok := server["address"].(string)
+		if !ok {
+			filtered = append(filtered, item)
+			continue
+		}
+
+		var serverType, host string
+		switch {
+		case addr == "local":
+			serverType = "local"
+		case strings.Contains(addr, "://"):
+			u, err := url.Parse(addr)
+			if err != nil {
+				continue
+			}
+			switch u.Scheme {
+			case "tcp", "udp", "tls", "https", "quic", "h3":
+				serverType = u.Scheme
+				host = u.Host
+			default:
+				continue // rcode://, fakeip, dhcp:// etc - no mechanical equivalent, drop
+			}
+		default:
+			serverType = "udp"
+			host = addr
+		}
+
+		delete(server, "address")
+		delete(server, "strategy")
+		server["type"] = serverType
+		if host != "" {
+			server["server"] = host
+		}
+		if resolver, ok := server["address_resolver"]; ok {
+			server["domain_resolver"] = resolver
+			delete(server, "address_resolver")
+		}
+		filtered = append(filtered, item)
+	}
+	dns["servers"] = filtered
+}
+
+// migrateLegacyInboundSniffFields rewrites the pre-1.11 per-inbound "sniff"/"sniff_timeout"/
+// "domain_strategy" fields into the "sniff"/"resolve" route rule actions sing-box now requires
+// instead (see migration.md, "Migrate legacy inbound fields to rule actions"). Assigns a tag to
+// any affected inbound that doesn't already have one, since the route rules need something to
+// target. "sniff_override_destination" has no equivalent in the new rule-action model at all and
+// is just dropped - true is not overwhelmingly the common case, and there is no substitute action
+// field to move it to.
+func migrateLegacyInboundSniffFields(doc map[string]interface{}) {
+	inbounds, ok := doc["inbounds"].([]interface{})
+	if !ok {
+		return
+	}
+	var newRules []interface{}
+	for i, item := range inbounds {
+		inbound, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		_, hasSniff := inbound["sniff"]
+		_, hasSniffTimeout := inbound["sniff_timeout"]
+		_, hasDomainStrategy := inbound["domain_strategy"]
+		if !hasSniff && !hasSniffTimeout && !hasDomainStrategy {
+			continue
+		}
+
+		tag, _ := inbound["tag"].(string)
+		if tag == "" {
+			tag = fmt.Sprintf("legacy-inbound-%d", i)
+			inbound["tag"] = tag
+		}
+
+		if strategy, ok := inbound["domain_strategy"]; ok {
+			newRules = append(newRules, map[string]interface{}{
+				"inbound":  tag,
+				"action":   "resolve",
+				"strategy": strategy,
+			})
+			delete(inbound, "domain_strategy")
+		}
+		if sniff, _ := inbound["sniff"].(bool); sniff {
+			rule := map[string]interface{}{
+				"inbound": tag,
+				"action":  "sniff",
+			}
+			if timeout, ok := inbound["sniff_timeout"]; ok {
+				rule["timeout"] = timeout
+			}
+			newRules = append(newRules, rule)
+		}
+		delete(inbound, "sniff")
+		delete(inbound, "sniff_timeout")
+		delete(inbound, "sniff_override_destination")
+	}
+	if len(newRules) == 0 {
+		return
+	}
+	route, ok := doc["route"].(map[string]interface{})
+	if !ok {
+		route = make(map[string]interface{})
+		doc["route"] = route
+	}
+	existingRules, _ := route["rules"].([]interface{})
+	route["rules"] = append(newRules, existingRules...)
+}
+
+// migrateLegacyDNSOutbounds rewrites the pre-1.13 pattern of a "type": "dns" outbound plus a route
+// rule pointing at it via "outbound" into the "action": "hijack-dns" route rule sing-box now
+// requires instead (see hiddify-sing-box/docs/migration.md, "Migrate DNS outbound to rule action").
+// Older backends (hiddify-manager panels, hand-written configs following older docs) still
+// generate the legacy shape, and sing-box hard-rejects any "type": "dns" outbound outright now
+// rather than just warning about it - such a config fails to parse at all without this, even
+// outside full-config mode, since the deprecated outbound gets rejected during unmarshalling
+// regardless of whether anything in the route section actually gets kept.
+func migrateLegacyDNSOutbounds(doc map[string]interface{}) {
+	outboundsRaw, ok := doc["outbounds"].([]interface{})
+	if !ok {
+		return
+	}
+	dnsTags := make(map[string]bool)
+	filtered := outboundsRaw[:0]
+	for _, item := range outboundsRaw {
+		if ob, ok := item.(map[string]interface{}); ok {
+			if t, _ := ob["type"].(string); t == "dns" {
+				if tag, _ := ob["tag"].(string); tag != "" {
+					dnsTags[tag] = true
+				}
+				continue
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	if len(dnsTags) == 0 {
+		return
+	}
+	doc["outbounds"] = filtered
+
+	route, ok := doc["route"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	rules, ok := route["rules"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, item := range rules {
+		rule, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if outboundTag, _ := rule["outbound"].(string); dnsTags[outboundTag] {
+			delete(rule, "outbound")
+			rule["action"] = "hijack-dns"
+		}
+	}
 }
 
 // looksLikeSingboxSchema reports whether a decoded JSON object matches sing-box's config schema

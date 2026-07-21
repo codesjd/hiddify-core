@@ -156,6 +156,87 @@ func TestParseConfigContent_XrayConfigArrayParses(t *testing.T) {
 	}
 }
 
+// Reported as "the SSH configuration isn't recognized by the client at all": a full sing-box JSON
+// config (panel-generated) using the pre-1.13 "type": "dns" outbound + a route rule pointing at it
+// via "outbound", which sing-box now hard-rejects during unmarshalling regardless of whether the
+// route section is even kept (it isn't, outside full-config mode) - see migrateLegacyDNSOutbounds.
+func TestParseConfigContent_LegacyDNSOutboundMigrates(t *testing.T) {
+	legacyConfig := `{
+		"outbounds": [
+			{"type": "ssh", "tag": "ssh-out", "server": "203.0.113.1", "server_port": 22, "user": "root"},
+			{"tag": "direct", "type": "direct"},
+			{"tag": "block", "type": "block"},
+			{"tag": "dns-out", "type": "dns"}
+		],
+		"route": {
+			"final": "ssh-out",
+			"rules": [
+				{"outbound": "dns-out", "port": [53]}
+			]
+		}
+	}`
+
+	ctx := libbox.BaseContext(nil)
+	options, err := parseConfigContent(ctx, []byte(legacyConfig), false, nil, false)
+	if err != nil {
+		t.Fatalf("expected the legacy dns-outbound config to parse, got error: %v", err)
+	}
+	for _, ob := range options.Outbounds {
+		if ob.Type == "dns" {
+			t.Fatalf("legacy 'dns' outbound should have been migrated away, still present: %+v", ob)
+		}
+	}
+}
+
+// Same report, but exercised in full-config mode (EnableFullConfig), where the route/dns/inbounds
+// sections are kept verbatim rather than discarded - so the legacy DNS server address format
+// ("address": "tcp://1.1.1.1") and legacy per-inbound sniff fields ("sniff": true on the inbound
+// itself, pre-1.11) both need migrating too, or the config fails at unmarshal time even after the
+// dns-outbound fix above. See migrateLegacyDNSServers / migrateLegacyInboundSniffFields.
+//
+// Known gaps intentionally not exercised here (both confirmed present in the real reported
+// config, neither fixed by this pass): a DNS server using "rcode://" or "fakeip" has no
+// mechanical new-format equivalent and is dropped rather than migrated; a route rule matching on
+// legacy "geoip" is a separate deprecation (pre-1.12) this pass doesn't touch.
+func TestParseConfigContent_LegacyDNSServerAndInboundFieldsMigrate(t *testing.T) {
+	legacyConfig := `{
+		"dns": {
+			"servers": [
+				{"address": "tcp://1.1.1.1", "address_resolver": "dns-local", "strategy": "prefer_ipv4", "tag": "dns-remote"},
+				{"address": "local", "tag": "dns-local"}
+			],
+			"final": "dns-remote"
+		},
+		"inbounds": [
+			{"type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 2080, "sniff": true, "sniff_override_destination": false}
+		],
+		"outbounds": [
+			{"type": "ssh", "tag": "ssh-out", "server": "203.0.113.1", "server_port": 22, "user": "root"},
+			{"tag": "direct", "type": "direct"}
+		],
+		"route": {
+			"final": "ssh-out"
+		}
+	}`
+
+	ctx := libbox.BaseContext(nil)
+	fullOpt := DefaultHiddifyOptions()
+	fullOpt.EnableFullConfig = true
+	options, err := parseConfigContent(ctx, []byte(legacyConfig), false, fullOpt, true)
+	if err != nil {
+		t.Fatalf("expected the legacy full-config document to parse, got error: %v", err)
+	}
+	foundSniffRule := false
+	for _, rule := range options.Route.Rules {
+		if rule.DefaultOptions.Action == "sniff" {
+			foundSniffRule = true
+		}
+	}
+	if !foundSniffRule {
+		t.Fatalf("expected the legacy 'sniff' inbound field to migrate into a sniff rule action, got rules: %+v", options.Route.Rules)
+	}
+}
+
 func TestParseConfigContent_SingboxDocumentStillParses(t *testing.T) {
 	singboxConfig := `{
 		"outbounds": [
