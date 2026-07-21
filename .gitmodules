@@ -1,6 +1,8 @@
 [submodule "hiddify-sing-box"]
 	path = hiddify-sing-box
-	url = https://github.com/hiddify/hiddify-sing-box
+	url = https://github.com/codesjd/hiddify-sing-box
+	branch = client-sync/pinned-cert-tls
 [submodule "ray2sing"]
 	path = ray2sing
-	url = git@github.com:hiddify/ray2sing.git
+	url = https://github.com/codesjd/ray2sing
+	branch = client-sync/pcs-and-anytls
