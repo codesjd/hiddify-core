@@ -12,7 +12,6 @@ import (
 	hcommon "github.com/hiddify/hiddify-core/v2/hcommon"
 	service_manager "github.com/hiddify/hiddify-core/v2/service_manager"
 	"github.com/sagernet/sing-box/adapter"
-	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/experimental/libbox"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/service"
@@ -139,7 +138,16 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	if in.DelayStart {
 		<-time.After(1000 * time.Millisecond)
 	}
-	libbox.SetMemoryLimit(C.IsIos || !in.DisableMemoryLimit)
+	// libbox.SetMemoryLimit(bool) was removed from this sing-box version. Memory limiting now
+	// happens inside libbox.Setup() itself (already called during service init, see
+	// grpc_server.go), which applies iOS's ~50MB Network Extension cap automatically via
+	// oomkiller.DefaultAppleNetworkExtensionMemoryLimit when C.IsIos, and otherwise leaves Go's
+	// GC unrestricted. The removed function's non-iOS default limit value (used here whenever
+	// DisableMemoryLimit was false) isn't available anywhere in the current library, and
+	// guessing a number for it risks capping desktop/Android far too low (causing GC thrashing
+	// under normal use) - deliberately left as Go's default (no artificial limit) rather than a
+	// blind guess. TODO: recover the intended non-iOS default from hiddify-core's release
+	// history and restore it here.
 	instance, err := NewService(ctx, *options)
 	if err != nil {
 		return errorWrapper(MessageType_START_SERVICE, err)
