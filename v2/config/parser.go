@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/hiddify/ray2sing/ray2sing"
+	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/experimental/libbox"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/batch"
@@ -81,12 +82,17 @@ func parseConfigContent(ctx context.Context, content []byte, debug bool, configO
 			newContent, _ := json.MarshalIndent(jsonObj, "", "  ")
 
 			return patchConfigStr(ctx, newContent, "SingboxParser", configOpt)
-		} else if jsonArray, ok := tmpJsonResult.([]map[string]interface{}); ok {
-			jsonObj["outbounds"] = jsonArray
-
-			newContent, _ := json.MarshalIndent(jsonObj, "", "  ")
-
-			return patchConfigStr(ctx, newContent, "SingboxParser", configOpt)
+		} else if arr, ok := tmpJsonResult.([]interface{}); ok {
+			// A top-level JSON array is how some panels export a subscription offering several
+			// complete, self-contained Xray-core configs at once (one "profile" per array
+			// element, each with its own inbounds/outbounds/routing) rather than a list of
+			// share-links. Each element becomes a sing-box outbound of the existing "xray" type,
+			// handing the whole document to an embedded Xray-core instance to run as a
+			// self-contained outbound - the same mechanism ray2sing already uses for individual
+			// xray-core-backed links (see xray_base.go's makeXrayOptions).
+			if outbounds := xrayConfigArrayToOutbounds(arr); len(outbounds) > 0 {
+				return patchConfigOptions(ctx, &option.Options{Outbounds: outbounds}, "XrayJsonArrayParser", configOpt)
+			}
 		}
 		// Valid JSON, but not sing-box's outbound schema - most commonly a raw Xray-core config
 		// (which also has a top-level "outbounds" key, just with "protocol"-shaped entries
@@ -149,6 +155,75 @@ func looksLikeSingboxSchema(obj map[string]interface{}) bool {
 		}
 	}
 	return true
+}
+
+// xrayRealProxyOutbound picks the actual proxy outbound out of a full Xray-core config document's
+// "outbounds" array. The xray outbound adapter (hiddify-sing-box/protocol/hiddify/xray/outbound.go)
+// wraps exactly one xray-core outbound detour config (protocol/settings/streamSettings) and dials
+// straight to its handler, bypassing xray-core's own router - it isn't given a whole document with
+// inbounds/routing, so the boilerplate "direct"/"block"/fragment entries every element in this
+// format carries alongside the real proxy have to be filtered out here first. "proxy" is the tag
+// every observed generator of this format uses for the real entry; fall back to the first entry
+// whose protocol isn't one of the known boilerplate ones, in case some panel uses a different tag.
+func xrayRealProxyOutbound(entry map[string]interface{}) map[string]interface{} {
+	outboundsRaw, ok := entry["outbounds"].([]interface{})
+	if !ok {
+		return nil
+	}
+	var fallback map[string]interface{}
+	for _, item := range outboundsRaw {
+		ob, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if tag, _ := ob["tag"].(string); tag == "proxy" {
+			return ob
+		}
+		if fallback == nil {
+			switch protocol, _ := ob["protocol"].(string); protocol {
+			case "freedom", "blackhole", "dns", "":
+			default:
+				fallback = ob
+			}
+		}
+	}
+	return fallback
+}
+
+// xrayConfigArrayToOutbounds converts a JSON array of complete Xray-core config documents (each
+// with its own "outbounds" containing "protocol"-shaped entries, per looksLikeSingboxSchema) into
+// one sing-box "xray"-type outbound per element - a format some subscription panels use to offer
+// several full "profiles" at once instead of a list of share-links. Elements that aren't full
+// Xray-core documents, or whose real proxy outbound can't be identified, are skipped rather than
+// aborting the whole array, since a subscription may mix in unrelated entries.
+func xrayConfigArrayToOutbounds(arr []interface{}) []option.Outbound {
+	var outbounds []option.Outbound
+	for i, item := range arr {
+		entry, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, hasOutbounds := entry["outbounds"]; !hasOutbounds || looksLikeSingboxSchema(entry) {
+			continue
+		}
+		proxyOutbound := xrayRealProxyOutbound(entry)
+		if proxyOutbound == nil {
+			continue
+		}
+		tag, _ := entry["remarks"].(string)
+		if tag == "" {
+			tag = fmt.Sprintf("xray-config-%d", i)
+		}
+		tag = fmt.Sprintf("%s § %d", tag, i)
+		outbounds = append(outbounds, option.Outbound{
+			Type: C.TypeXray,
+			Tag:  tag,
+			Options: &option.XrayOutboundOptions{
+				XConfig: &proxyOutbound,
+			},
+		})
+	}
+	return outbounds
 }
 
 func patchConfigStr(ctx context.Context, content []byte, name string, configOpt *HiddifyOptions) (*option.Options, error) {

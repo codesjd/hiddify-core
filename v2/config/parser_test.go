@@ -90,6 +90,72 @@ func TestParseConfigContent_XrayCoreDocumentDoesNotMisrouteToSingboxParser(t *te
 	}
 }
 
+// Some subscription panels export a top-level JSON array of complete, self-contained Xray-core
+// config documents (one "profile" per element, each with its own inbounds/outbounds/routing)
+// instead of a list of share-links or a single sing-box config. Each element should become its
+// own selectable sing-box outbound (type "xray"), delegating the whole document to an embedded
+// Xray-core instance - not get rejected as "Incorrect Json Format".
+func TestParseConfigContent_XrayConfigArrayParses(t *testing.T) {
+	// Trimmed down from a real subscription response reported as "not recognized at all".
+	xrayConfigArray := `[
+		{
+			"remarks": "example vless xhttp",
+			"log": {"loglevel": "warning"},
+			"inbounds": [
+				{"tag": "socks", "port": 10808, "listen": "127.0.0.1", "protocol": "socks", "settings": {"auth": "noauth"}}
+			],
+			"outbounds": [
+				{
+					"tag": "proxy",
+					"protocol": "vless",
+					"settings": {
+						"vnext": [{"address": "203.0.113.1", "port": 443, "users": [{"id": "6aca7d1d-632c-464f-b8de-f640962d89c7", "encryption": "none"}]}]
+					},
+					"streamSettings": {"security": "tls", "network": "xhttp", "tlsSettings": {"serverName": "example.test"}}
+				},
+				{"tag": "direct", "protocol": "freedom", "settings": {}},
+				{"tag": "block", "protocol": "blackhole", "settings": {}}
+			],
+			"routing": {
+				"rules": [
+					{"type": "field", "outboundTag": "direct", "domain": ["geosite:cn"]},
+					{"type": "field", "port": "0-65535", "outboundTag": "proxy"}
+				]
+			}
+		},
+		{
+			"remarks": "example trojan grpc",
+			"log": {"loglevel": "warning"},
+			"outbounds": [
+				{
+					"tag": "proxy",
+					"protocol": "trojan",
+					"settings": {"servers": [{"address": "203.0.113.2", "port": 443, "password": "hunter2"}]},
+					"streamSettings": {"security": "tls", "network": "grpc"}
+				},
+				{"tag": "direct", "protocol": "freedom", "settings": {}}
+			]
+		}
+	]`
+
+	ctx := libbox.BaseContext(nil)
+	options, err := parseConfigContent(ctx, []byte(xrayConfigArray), false, nil, false)
+	if err != nil {
+		t.Fatalf("expected the xray-config array to parse, got error: %v", err)
+	}
+	if len(options.Outbounds) != 2 {
+		t.Fatalf("expected 2 outbounds (one per array element), got %d: %+v", len(options.Outbounds), options.Outbounds)
+	}
+	for _, ob := range options.Outbounds {
+		if ob.Type != "xray" {
+			t.Fatalf("expected outbound type %q, got %q (tag %q)", "xray", ob.Type, ob.Tag)
+		}
+		if !strings.HasPrefix(ob.Tag, "example ") {
+			t.Fatalf("expected outbound tag to start with its 'remarks', got %q", ob.Tag)
+		}
+	}
+}
+
 func TestParseConfigContent_SingboxDocumentStillParses(t *testing.T) {
 	singboxConfig := `{
 		"outbounds": [
