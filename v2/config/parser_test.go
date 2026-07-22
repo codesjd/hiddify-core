@@ -250,3 +250,35 @@ func TestParseConfigContent_SingboxDocumentStillParses(t *testing.T) {
 		t.Fatalf("expected a valid sing-box config to parse, got error: %v", err)
 	}
 }
+
+// TestParseConfig_HonorsUseXrayCoreWhenPossible guards against ParseConfig (the exported entry
+// point v2/hcore actually calls with the user's real HiddifyOptions) silently discarding the
+// configOpt/fullConfig it receives and always parsing as if configOpt were nil - which happened
+// previously: ParseConfig hardcoded `parseConfigContent(ctx, content, debug, nil, false)`,
+// ignoring both parameters entirely, so a subscription import's real settings (particularly
+// UseXrayCoreWhenPossible) had no effect no matter what the caller passed. A plain vless+ws link
+// carries no explicit xray marker (no "core=xray", no requiresXrayCore()-forcing kcp/fm), so it can
+// only end up as an "xray"-type outbound if the UseXrayCoreWhenPossible option genuinely reached
+// ray2sing.
+func TestParseConfig_HonorsUseXrayCoreWhenPossible(t *testing.T) {
+	link := "vless://6aca7d1d-632c-464f-b8de-f640962d89c7@example.com:443?type=ws&security=none#test"
+	ctx := libbox.BaseContext(nil)
+
+	nativeOpts, err := ParseConfig(ctx, &ReadOptions{Content: link}, false, DefaultHiddifyOptions(), false)
+	if err != nil {
+		t.Fatalf("expected the link to parse with the default (xray-core off) option, got error: %v", err)
+	}
+	if len(nativeOpts.Outbounds) != 1 || nativeOpts.Outbounds[0].Type != "vless" {
+		t.Fatalf("expected a native 'vless'-type outbound by default, got %+v", nativeOpts.Outbounds)
+	}
+
+	xrayOpt := DefaultHiddifyOptions()
+	xrayOpt.UseXrayCoreWhenPossible = true
+	xrayOpts, err := ParseConfig(ctx, &ReadOptions{Content: link}, false, xrayOpt, false)
+	if err != nil {
+		t.Fatalf("expected the link to parse with UseXrayCoreWhenPossible, got error: %v", err)
+	}
+	if len(xrayOpts.Outbounds) != 1 || xrayOpts.Outbounds[0].Type != "xray" {
+		t.Fatalf("expected UseXrayCoreWhenPossible to route through the embedded xray-core path ('xray'-type outbound), got %+v", xrayOpts.Outbounds)
+	}
+}

@@ -41,7 +41,7 @@ func ParseConfig(ctx context.Context, opt *ReadOptions, debug bool, configOpt *H
 	if err != nil {
 		return nil, err
 	}
-	return parseConfigContent(ctx, content, debug, nil, false)
+	return parseConfigContent(ctx, content, debug, configOpt, fullConfig)
 }
 
 func ParseConfigBytes(ctx context.Context, opt *ReadOptions, debug bool, configOpt *HiddifyOptions, fullConfig bool) ([]byte, error) {
