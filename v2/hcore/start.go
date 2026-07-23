@@ -17,6 +17,11 @@ import (
 	"github.com/sagernet/sing/service"
 )
 
+// startHangWatchdogTimeout is how long NewService is given before the watchdog dumps a
+// goroutine trace. Well above any legitimate startup time (even a large subscription's worth of
+// sequential outbound construction), so it only fires on a genuine stall.
+const startHangWatchdogTimeout = 20 * time.Second
+
 func (s *CoreService) Start(ctx context.Context, in *StartRequest) (*CoreInfoResponse, error) {
 	return Start(static.BaseContext, in)
 }
@@ -148,7 +153,23 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	// under normal use) - deliberately left as Go's default (no artificial limit) rather than a
 	// blind guess. TODO: recover the intended non-iOS default from hiddify-core's release
 	// history and restore it here.
+	// NewService can block indefinitely (observed: users report the app stuck at "Connecting..."
+	// specifically at debug/trace log levels, requiring a force-close). The existing
+	// goroutine-start.log dump below only fires *after* NewService returns, so it captures
+	// nothing if NewService itself is what's hung. This watchdog dumps a full goroutine trace
+	// from a separate goroutine if NewService hasn't returned within startHangWatchdogTimeout,
+	// without affecting NewService's own execution - purely diagnostic, so the next reproduction
+	// pinpoints exactly which goroutine is stuck and where, rather than more guessing.
+	watchdogDone := make(chan struct{})
+	go func() {
+		select {
+		case <-watchdogDone:
+		case <-time.After(startHangWatchdogTimeout):
+			dumpGoroutinesToFile(fmt.Sprint(sWorkingPath, "/data/goroutine-hang-watchdog.log"))
+		}
+	}()
 	instance, err := NewService(ctx, *options)
+	close(watchdogDone)
 	if err != nil {
 		return errorWrapper(MessageType_START_SERVICE, err)
 	}
