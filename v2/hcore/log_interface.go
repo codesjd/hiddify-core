@@ -43,7 +43,12 @@ func (h *LogInterface) WriteDebugMessage(message string) {
 	h.WriteMessage(log.LevelDebug, message)
 }
 func (h *LogInterface) WriteMessage(level log.Level, message string) {
-	Log(convertLogLevel(level), LogType_SERVICE, message)
+	// Must not call Log() here - Log() calls back into the sing-box package-level log.Debug/
+	// Info/etc, which (once the box's global std logger is pointed at this same per-box logger)
+	// re-invokes this exact callback, recursing forever. See publishServiceLogMessage's doc
+	// comment for the full cycle; this was the root cause of the app hanging at "Connecting..."
+	// whenever debug/trace logging was enabled.
+	publishServiceLogMessage(convertLogLevel(level), LogType_SERVICE, message)
 }
 func convertLogLevel(level log.Level) LogLevel {
 	switch level {

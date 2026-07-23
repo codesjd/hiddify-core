@@ -48,6 +48,30 @@ func Log(level LogLevel, typ LogType, message ...any) {
 	})
 }
 
+// publishServiceLogMessage forwards a message to the app-level log stream/UI (the gRPC
+// LogListener subscribers) without re-entering the sing-box logger, unlike Log(). It exists
+// specifically for LogInterface.WriteMessage (sing-box's log.PlatformWriter callback): that
+// callback fires *from inside* the box's own logger (sing-box/log.(*observableLogger).Log calling
+// its registered platformWriter) whenever the box's global std logger has been pointed at that
+// same per-box logger instance. Log() calls logLevel(), which calls back into the sing-box
+// package-level log.Debug/Info/etc - i.e. right back into std, which invokes the platformWriter
+// callback again, forever. Observed as the root cause of the app getting stuck at "Connecting..."
+// specifically at debug/trace log levels: a goroutine dump showed this exact cycle repeated over
+// 166,000 times on one goroutine (daemon.StartedService.WriteMessage only invokes
+// WriteDebugMessage at all when static.debug is true, i.e. debug/trace - explaining why it never
+// happened at info level, regardless of profile or profile count).
+func publishServiceLogMessage(level LogLevel, typ LogType, message string) {
+	if level < static.logLevel {
+		return
+	}
+	static.logObserver.Publish(&LogMessage{
+		Level:   level,
+		Type:    typ,
+		Time:    timestamppb.New(time.Now()),
+		Message: message,
+	})
+}
+
 func (s *CoreService) LogListener(req *LogRequest, stream grpc.ServerStreamingServer[LogMessage]) error {
 	logSub := static.logObserver.Subscribe(1)
 	defer static.logObserver.Unsubscribe(logSub)
