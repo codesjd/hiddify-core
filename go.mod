@@ -310,6 +310,10 @@ replace github.com/Psiphon-Labs/quic-go => ./hiddify-sing-box/replace/psiphon-qu
 
 replace github.com/Psiphon-Labs/psiphon-tls => ./hiddify-sing-box/replace/psiphon-tls
 
+// See hiddify-sing-box/replace/xray-core: patches xicmp to tolerate hosts missing IPv4 or IPv6
+// unprivileged ICMP support instead of refusing the outbound entirely.
+replace github.com/xtls/xray-core => ./hiddify-sing-box/replace/xray-core
+
 replace github.com/net2share/vaydns => github.com/hiddify/vaydns v0.0.0-20260401180616-890dc987a6a9
 
 replace github.com/kianmhz/GooseRelayVPN => github.com/hiddify/GooseRelayVPN v0.0.0-20260429125124-0e68c2a3ae4c
