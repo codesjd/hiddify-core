@@ -29,6 +29,7 @@ var mainCommand = &cobra.Command{
 
 func init() {
 	mainCommand.AddCommand(commandService)
+	mainCommand.AddCommand(commandIcmpService)
 	mainCommand.AddCommand(commandGenerateCertification)
 
 	mainCommand.PersistentFlags().StringVarP(&workingDir, "directory", "D", "", "set working directory")
