@@ -97,6 +97,8 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	}
 	SetCoreStatus(CoreStates_STARTING, MessageType_EMPTY, "")
 
+	wireIcmpElevation()
+
 	in, err = loadLastStartRequestIfNeeded(in)
 	if err != nil {
 		return errorWrapper(MessageType_ERROR_BUILDING_CONFIG, err)
