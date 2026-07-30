@@ -71,7 +71,7 @@ func (h *HiddifyInstance) Box() *box.Box {
 }
 
 func (h *HiddifyInstance) Instance() *daemon.Instance {
-	ss := h.StartedService
+	ss := h.StartedService.Load()
 	if ss == nil {
 		return nil
 	}

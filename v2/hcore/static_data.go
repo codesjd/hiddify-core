@@ -3,6 +3,7 @@ package hcore
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hiddify/hiddify-core/v2/config"
@@ -13,8 +14,8 @@ import (
 )
 
 type HiddifyInstance struct {
-	StartedService *daemon.StartedService
-	HiddifyOptions *config.HiddifyOptions
+	StartedService atomic.Pointer[daemon.StartedService]
+	HiddifyOptions *config.HiddifyOptions // still guarded by optionsLock below
 	// activeConfigPath string
 	CoreLogFactory            log.Factory
 	coreInfoObserver          *monitoring.Broadcaster[*CoreInfoResponse]
@@ -23,7 +24,7 @@ type HiddifyInstance struct {
 	systemInfoObserver        *monitoring.Broadcaster[*SystemInfo]
 	outboundsInfoObserver     *monitoring.Broadcaster[*OutboundGroupList]
 	mainOutboundsInfoObserver *monitoring.Broadcaster[*OutboundGroupList]
-	lock                      sync.Mutex
+	optionsLock               sync.Mutex // guards HiddifyOptions only
 	globalPlatformInterface   libbox.PlatformInterface
 	previousStartRequest      *StartRequest
 	debug                     bool

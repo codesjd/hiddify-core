@@ -64,8 +64,9 @@ func RunInstance(ctx context.Context, hiddifySettings *config.HiddifyOptions, si
 
 	<-time.After(250 * time.Millisecond)
 	hservice := &HiddifyInstance{
-		StartedService: instance,
-		ListenPort:     hiddifySettings.InboundOptions.MixedPort}
+		ListenPort: hiddifySettings.InboundOptions.MixedPort,
+	}
+	hservice.StartedService.Store(instance)
 	hservice.PingCloudflare()
 	return hservice, nil
 }
@@ -73,7 +74,7 @@ func RunInstance(ctx context.Context, hiddifySettings *config.HiddifyOptions, si
 // dialer, err := s.libbox.GetInstance().Router().Dialer(context.Background())
 
 func (s *HiddifyInstance) Close() error {
-	return s.StartedService.CloseService()
+	return s.StartedService.Load().CloseService()
 }
 
 func (s *HiddifyInstance) GetContent(url string) (string, error) {

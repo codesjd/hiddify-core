@@ -35,7 +35,10 @@ func Restart(ctx context.Context, in *StartRequest) (coreResponse *CoreInfoRespo
 	// with no crash involved) reproduces on Windows too: StartService() below recreates the
 	// TUN interface immediately after Stop(), racing the OS's own teardown of the one Stop()
 	// just closed.
-	if static.HiddifyOptions.EnableTun {
+	static.optionsLock.Lock()
+	opts := static.HiddifyOptions
+	static.optionsLock.Unlock()
+	if opts.EnableTun {
 		select {
 		case <-ctx.Done():
 			return SetCoreStatus(CoreStates_STOPPED, MessageType_INSTANCE_NOT_STARTED, "restart cancelled"), nil

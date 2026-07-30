@@ -84,9 +84,6 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	defer config.DeferPanicToError("startmobile", func(recovered_err error) {
 		coreResponse, err = errorWrapper(MessageType_UNEXPECTED_ERROR, recovered_err)
 	})
-	static.lock.Lock()
-	defer static.lock.Unlock()
-
 	if static.CoreState != CoreStates_STOPPED {
 		// return errorWrapper(MessageType_ALREADY_STARTED, fmt.Errorf("instance already started"))
 		return &CoreInfoResponse{
@@ -106,7 +103,10 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 
 	static.previousStartRequest = in
 
-	if static.HiddifyOptions == nil {
+	static.optionsLock.Lock()
+	optionsNil := static.HiddifyOptions == nil
+	static.optionsLock.Unlock()
+	if optionsNil {
 		return errorWrapper(
 			MessageType_ERROR_BUILDING_CONFIG,
 			errors.New("HiddifyOptions not initialized"),
@@ -175,7 +175,7 @@ func StartService(ctx context.Context, in *StartRequest) (coreResponse *CoreInfo
 	if err != nil {
 		return errorWrapper(MessageType_START_SERVICE, err)
 	}
-	static.StartedService = instance
+	static.StartedService.Store(instance)
 	if static.debug {
 		dumpGoroutinesToFile(fmt.Sprint(sWorkingPath, "/data/goroutine-start.log"))
 	}
