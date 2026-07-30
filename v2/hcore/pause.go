@@ -13,7 +13,7 @@ func (s *CoreService) Close(ctx context.Context, closeReq *CloseRequest) (*hcomm
 		return nil, nil
 	}
 	mode := closeReq.Mode
-	if grpcServer[mode] == nil {
+	if !grpcServerExists(mode) {
 		Log(LogLevel_WARNING, LogType_CORE, "grpcServer already stoped")
 		return nil, nil
 	}

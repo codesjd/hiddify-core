@@ -5,6 +5,8 @@ package hcore
 */
 
 import (
+	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -30,8 +32,11 @@ import (
 	"github.com/sagernet/sing-box/log"
 	E "github.com/sagernet/sing/common/exceptions"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	_ "google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 type CoreService struct {
@@ -43,6 +48,7 @@ func Setup(params *SetupRequest, platformInterface libbox.PlatformInterface) err
 		Log(LogLevel_FATAL, LogType_CORE, err.Error())
 		<-time.After(5 * time.Second)
 	})
+	configuredSecret = params.Secret
 	if params.Debug {
 		go func() {
 			http.ListenAndServe("localhost:6060", nil)
@@ -169,11 +175,48 @@ func StartHelloGrpcServer(listenAddressG string) (*grpc.Server, error) {
 }
 
 var (
-	certpair   *hutils.CertificatePair
-	grpcServer map[SetupMode]*grpc.Server = make(map[SetupMode]*grpc.Server)
-	caCertPool                            = x509.NewCertPool()
-	mu                                    = sync.Mutex{}
+	certpair         *hutils.CertificatePair
+	grpcServer       map[SetupMode]*grpc.Server = make(map[SetupMode]*grpc.Server)
+	caCertPool                                  = x509.NewCertPool()
+	mu                                           = sync.Mutex{}
+	configuredSecret string
 )
+
+// checkSecret validates the incoming call's "secret" metadata against configuredSecret.
+//
+// ponytail: soft mode - an empty configuredSecret allows every call through unconditionally.
+// This is Step 1 of plan 018: it exists so platforms that haven't been updated yet to send a
+// secret aren't broken. Step 6 of that plan removes this bypass once every platform is verified
+// to send one; until then a caller that (by bug or regression) sends an empty secret is
+// indistinguishable from one not yet updated.
+func checkSecret(ctx context.Context) error {
+	if configuredSecret == "" {
+		return nil
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "missing secret metadata")
+	}
+	values := md.Get("secret")
+	if len(values) == 0 || subtle.ConstantTimeCompare([]byte(values[0]), []byte(configuredSecret)) != 1 {
+		return status.Error(codes.Unauthenticated, "invalid secret")
+	}
+	return nil
+}
+
+func secretUnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	if err := checkSecret(ctx); err != nil {
+		return nil, err
+	}
+	return handler(ctx, req)
+}
+
+func secretStreamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	if err := checkSecret(ss.Context()); err != nil {
+		return err
+	}
+	return handler(srv, ss)
+}
 
 // StartGrpcServerByMode starts a gRPC server on the specified address with mTLS.
 func StartGrpcServerByMode(listenAddressG string, mode SetupMode) (*grpc.Server, error) {
@@ -196,8 +239,13 @@ func StartGrpcServerByMode(listenAddressG string, mode SetupMode) (*grpc.Server,
 		return grpcServer[mode], nil
 	}
 
+	authOpts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(secretUnaryInterceptor),
+		grpc.ChainStreamInterceptor(secretStreamInterceptor),
+	}
+
 	if mode == SetupMode_GRPC_BACKGROUND_INSECURE || mode == SetupMode_GRPC_NORMAL_INSECURE {
-		grpcServer[mode] = grpc.NewServer()
+		grpcServer[mode] = grpc.NewServer(authOpts...)
 	} else {
 		table := db.GetTable[hcommon.AppSettings]()
 		Log(LogLevel_DEBUG, LogType_CORE, table)
@@ -238,7 +286,7 @@ func StartGrpcServerByMode(listenAddressG string, mode SetupMode) (*grpc.Server,
 
 		// Create a new gRPC server with TLS credentials
 		creds := credentials.NewTLS(tlsConfig)
-		grpcServer[mode] = grpc.NewServer(grpc.Creds(creds))
+		grpcServer[mode] = grpc.NewServer(append(authOpts, grpc.Creds(creds))...)
 	}
 	// Register your gRPC service here
 	RegisterCoreServer(grpcServer[mode], &CoreService{})
@@ -301,4 +349,10 @@ func CloseGrpcServer(mode SetupMode) {
 		server.Stop()
 		delete(grpcServer, mode)
 	}
+}
+
+func grpcServerExists(mode SetupMode) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return grpcServer[mode] != nil
 }
