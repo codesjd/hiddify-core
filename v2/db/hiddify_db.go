@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/syndtr/goleveldb/leveldb/opt"
@@ -42,6 +43,34 @@ func getDB(name string, readOnly bool) (tmdb.DB, error) {
 		time.Sleep(retryDelay)
 	}
 	return nil, err
+}
+
+var (
+	dbHandles   = map[string]tmdb.DB{}
+	dbHandlesMu sync.Mutex
+)
+
+// getOrOpenDB returns a cached handle for name, opening it (with getDB's
+// existing retry/fallback logic) only the first time or after a prior
+// handle failed. All access is read-write; a single process-owned handle
+// serves both reads and writes safely since tm-db serializes access
+// internally — the readOnly distinction getDB still supports is only
+// exercised on this first-open path, matching its original fallback
+// behavior for external lock contention.
+func getOrOpenDB(name string) (tmdb.DB, error) {
+	dbHandlesMu.Lock()
+	defer dbHandlesMu.Unlock()
+
+	if db, ok := dbHandles[name]; ok {
+		return db, nil
+	}
+
+	db, err := getDB(name, false)
+	if err != nil {
+		return nil, err
+	}
+	dbHandles[name] = db
+	return db, nil
 }
 
 // GetTable returns a new Table instance for the generic type T, ensuring the struct has an "Id" field.
@@ -116,11 +145,10 @@ type Table[T any] struct {
 
 // All retrieves all entries from the database and unmarshals them into a slice of T.
 func (tbl *Table[T]) All() ([]*T, error) {
-	db, err := getDB(tbl.name, true)
+	db, err := getOrOpenDB(tbl.name)
 	if db == nil {
 		return nil, fmt.Errorf("failed to open database %s, error: %w", tbl.name, err)
 	}
-	defer db.Close()
 
 	var items []*T
 	iter, err := db.Iterator(nil, nil)
@@ -168,11 +196,10 @@ func Deserialize[T any](data []byte) (*T, error) {
 
 // UpdateInsert inserts or updates multiple items in the database.
 func (tbl *Table[T]) UpdateInsert(items ...*T) error {
-	db, err := getDB(tbl.name, false)
+	db, err := getOrOpenDB(tbl.name)
 	if db == nil {
 		return fmt.Errorf("failed to open database %s, error: %w", tbl.name, err)
 	}
-	defer db.Close()
 
 	for _, item := range items {
 		// b, err := json.Marshal(item)
@@ -189,11 +216,10 @@ func (tbl *Table[T]) UpdateInsert(items ...*T) error {
 
 // Delete removes entries by their IDs.
 func (tbl *Table[T]) Delete(ids ...any) error {
-	db, err := getDB(tbl.name, false)
+	db, err := getOrOpenDB(tbl.name)
 	if db == nil {
 		return fmt.Errorf("failed to open database %s, error: %w", tbl.name, err)
 	}
-	defer db.Close()
 
 	for _, id := range ids {
 		if err := db.Delete(getIdBytes(id)); err != nil {
@@ -205,11 +231,10 @@ func (tbl *Table[T]) Delete(ids ...any) error {
 
 // Get retrieves a single item by its ID.
 func (tbl *Table[T]) Get(id any) (*T, error) {
-	db, err := getDB(tbl.name, true)
+	db, err := getOrOpenDB(tbl.name)
 	if db == nil {
 		return nil, fmt.Errorf("failed to open database %s, error: %w", tbl.name, err)
 	}
-	defer db.Close()
 
 	b, err := db.Get(getIdBytes(id))
 	if err != nil {
