@@ -38,7 +38,10 @@ func Restart(ctx context.Context, in *StartRequest) (coreResponse *CoreInfoRespo
 	static.optionsLock.Lock()
 	opts := static.HiddifyOptions
 	static.optionsLock.Unlock()
-	if opts.EnableTun {
+	// opts is nil on a never-configured instance (StartService below will return the
+	// standard "HiddifyOptions not initialized" error) - treat that as EnableTun=false
+	// rather than dereferencing a nil pointer.
+	if opts != nil && opts.EnableTun {
 		select {
 		case <-ctx.Done():
 			return SetCoreStatus(CoreStates_STOPPED, MessageType_INSTANCE_NOT_STARTED, "restart cancelled"), nil

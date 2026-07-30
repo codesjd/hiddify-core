@@ -51,19 +51,12 @@ func TestClose_UnstartedMode_ReturnsNilNoError(t *testing.T) {
 	require.Nil(t, resp)
 }
 
-// TestRestart_WhenNotStarted_DoesNotPanic answers this plan's nil-pointer-dereference question
-// from "Current state": Restart reads static.HiddifyOptions (nil on a fresh instance - see
-// static_data.go, never initialized there) and immediately dereferences opts.EnableTun without a
-// nil check. Unlike the plan's original assumption, this does NOT crash the process: Restart has
-// its own `defer config.DeferPanicToError(...)` (restart.go, matching Stop's and StartService's
-// pattern) which recovers any panic inside Restart and converts it into a normal
-// (*CoreInfoResponse, error) return - so require.NotPanics below is expected to hold either way.
-// What it does NOT do cleanly, unlike StartService (start.go:106-114, which nil-checks
-// HiddifyOptions and returns a clear MessageType_ERROR_BUILDING_CONFIG before ever touching it),
-// is avoid the dereference in the first place: if it fires, the caller gets a generic
-// MessageType_UNEXPECTED_ERROR after config.DeferPanicToError's unconditional 5-second sleep,
-// with a panic stack trace as the message, instead of an immediate, clean error. See this test's
-// package-level finding written up in the implementing plan's final report.
+// TestRestart_WhenNotStarted_DoesNotPanic guards the fix for a nil-pointer dereference that used
+// to live here: Restart read static.HiddifyOptions (nil on a fresh instance - see static_data.go,
+// never initialized there) and dereferenced opts.EnableTun with no nil check. restart.go now
+// treats a nil opts as EnableTun=false and falls through to StartService, whose own nil check
+// (start.go) returns a clean, immediate MessageType_ERROR_BUILDING_CONFIG instead of a panic
+// recovered 5 seconds later by config.DeferPanicToError with a generic MessageType_UNEXPECTED_ERROR.
 func TestRestart_WhenNotStarted_DoesNotPanic(t *testing.T) {
 	static.StartedService.Store(nil)
 
@@ -73,15 +66,12 @@ func TestRestart_WhenNotStarted_DoesNotPanic(t *testing.T) {
 		resp, err = Restart(context.Background(), &StartRequest{ConfigContent: "{}"})
 	}, "Restart must never crash the whole process, even on a fresh, never-configured instance")
 
-	if err != nil && strings.Contains(err.Error(), "nil pointer dereference") {
-		t.Logf("CONFIRMED (recovered internally, not a process crash): Restart() dereferences "+
-			"a nil static.HiddifyOptions via opts.EnableTun in restart.go when the instance was "+
-			"never configured; config.DeferPanicToError's recover() in Restart's own defer "+
-			"catches it (after its unconditional 5s sleep) and returns it as a generic "+
-			"MessageType_UNEXPECTED_ERROR instead of the clean, immediate error StartService "+
-			"gives for the same nil case: %v", err)
-	}
-	_ = resp
+	require.Error(t, err, "a never-configured instance should still report a failure")
+	require.NotNil(t, resp)
+	require.Equal(t, MessageType_ERROR_BUILDING_CONFIG, resp.MessageType,
+		"expected the same clean 'HiddifyOptions not initialized' path StartService takes, not a recovered panic")
+	require.False(t, strings.Contains(err.Error(), "nil pointer dereference"),
+		"regression: Restart should no longer dereference a nil HiddifyOptions")
 
 	static.StartedService.Store(nil)
 }
