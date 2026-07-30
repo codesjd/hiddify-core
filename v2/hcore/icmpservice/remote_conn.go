@@ -19,6 +19,10 @@ type RemoteICMPConn struct {
 	conn      *grpc.ClientConn
 	client    IcmpServiceClient
 	sessionID string
+	// authCtx carries the auth token as outgoing metadata (no deadline of its own) - every RPC
+	// after the initial OpenSession must also present the token, since the server-side interceptor
+	// checks it per-call, not per-connection.
+	authCtx context.Context
 }
 
 // DialRemoteICMP ensures the elevated helper is running, opens a new session for the given
@@ -39,13 +43,13 @@ func DialRemoteICMP(network string) (*RemoteICMPConn, error) {
 		return nil, fmt.Errorf("icmpservice: unsupported network %q", network)
 	}
 
-	conn, err := grpc.Dial(icmpServiceAddress, grpc.WithInsecure())
+	conn, dialCtx, _, err := dialIcmpService()
 	if err != nil {
 		return nil, fmt.Errorf("icmpservice: dial helper: %w", err)
 	}
 
 	client := NewIcmpServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(dialCtx, 5*time.Second)
 	defer cancel()
 	resp, err := client.OpenSession(ctx, &OpenSessionRequest{Family: family})
 	if err != nil {
@@ -57,11 +61,11 @@ func DialRemoteICMP(network string) (*RemoteICMPConn, error) {
 		return nil, fmt.Errorf("icmpservice: open session: %s", resp.Error)
 	}
 
-	return &RemoteICMPConn{conn: conn, client: client, sessionID: resp.SessionId}, nil
+	return &RemoteICMPConn{conn: conn, client: client, sessionID: resp.SessionId, authCtx: dialCtx}, nil
 }
 
 func (r *RemoteICMPConn) ReadFrom(b []byte) (int, net.Addr, error) {
-	ctx := context.Background()
+	ctx := r.authCtx
 	resp, err := r.client.ReadFrom(ctx, &ReadFromRequest{SessionId: r.sessionID, MaxBytes: int32(len(b))})
 	if err != nil {
 		return 0, nil, err
@@ -78,7 +82,7 @@ func (r *RemoteICMPConn) ReadFrom(b []byte) (int, net.Addr, error) {
 
 func (r *RemoteICMPConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	ip := addrIP(addr)
-	ctx := context.Background()
+	ctx := r.authCtx
 	resp, err := r.client.WriteTo(ctx, &WriteToRequest{SessionId: r.sessionID, Data: b, AddrIp: ip})
 	if err != nil {
 		return 0, err
@@ -90,7 +94,7 @@ func (r *RemoteICMPConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 }
 
 func (r *RemoteICMPConn) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(r.authCtx, 2*time.Second)
 	defer cancel()
 	_, _ = r.client.CloseSession(ctx, &CloseSessionRequest{SessionId: r.sessionID})
 	return r.conn.Close()
@@ -127,7 +131,7 @@ func setDeadlineField(t time.Time, clear *bool, nanos *int64) {
 }
 
 func (r *RemoteICMPConn) sendSetDeadlines(req *SetDeadlinesRequest) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(r.authCtx, 2*time.Second)
 	defer cancel()
 	_, err := r.client.SetDeadlines(ctx, req)
 	return err

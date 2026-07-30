@@ -1,13 +1,20 @@
 package icmpservice
 
 import (
+	"context"
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
+	hutils "github.com/hiddify/hiddify-core/v2/hutils"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 // icmpServicePort is deliberately different from tunnelservice's 18020 - this is an independent
@@ -58,6 +65,19 @@ func (w *idleWatcher) onSessionCountChanged(count int) {
 	}
 }
 
+// tokenAuthInterceptor rejects any unary RPC whose incoming gRPC metadata "token" key doesn't
+// match expected, using a constant-time comparison. Same shape as tunnelservice's interceptor
+// (plan 019) - duplicated rather than shared since the two services are otherwise unrelated.
+func tokenAuthInterceptor(expected string) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok || subtle.ConstantTimeCompare([]byte(strings.Join(md.Get("token"), "")), []byte(expected)) != 1 {
+			return nil, status.Error(codes.Unauthenticated, "missing or invalid token")
+		}
+		return handler(ctx, req)
+	}
+}
+
 // StartIcmpService is the entry point invoked from HiddifyCli.exe's "icmp run" subcommand
 // (see hiddify-core/cmd/cmd_icmp_service.go). It starts a plain, loopback-only gRPC server and
 // blocks until told to exit (via the Exit RPC or the idle timeout above) or the port is
@@ -66,13 +86,22 @@ func StartIcmpService() (int, string) {
 	watcher := newIdleWatcher()
 	svc := NewIcmpService(watcher.onSessionCountChanged)
 
+	dir, err := executableDir()
+	if err != nil {
+		return 1, fmt.Sprintf("failed to resolve executable directory: %v", err)
+	}
+	token, err := hutils.GenerateAndPersistServiceToken(dir, "icmp")
+	if err != nil {
+		return 1, fmt.Sprintf("failed to generate auth token: %v", err)
+	}
+
 	addr := fmt.Sprintf("127.0.0.1:%d", icmpServicePort)
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return 1, fmt.Sprintf("failed to listen on %s: %v", addr, err)
 	}
 
-	server := grpc.NewServer()
+	server := grpc.NewServer(grpc.ChainUnaryInterceptor(tokenAuthInterceptor(token)))
 	RegisterIcmpServiceServer(server, svc)
 
 	go func() {

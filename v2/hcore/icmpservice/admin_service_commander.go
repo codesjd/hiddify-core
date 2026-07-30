@@ -15,6 +15,7 @@ import (
 	hcommon "github.com/hiddify/hiddify-core/v2/hcommon"
 	hutils "github.com/hiddify/hiddify-core/v2/hutils"
 	grpc "google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 var icmpServiceAddress = fmt.Sprintf("127.0.0.1:%d", icmpServicePort)
@@ -68,18 +69,48 @@ func EnsureIcmpHelperRunning() error {
 	return fmt.Errorf("xicmp: helper process did not become reachable: %w", lastErr)
 }
 
+// executableDir returns the directory containing the running executable, used as the location of
+// the token file shared with the elevated helper (same file both the helper and its callers read).
+func executableDir() (string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(exePath), nil
+}
+
+// dialIcmpService dials the ICMP helper's gRPC server and returns a context carrying the auth
+// token as outgoing metadata. Callers must Close() the returned conn and apply their own
+// per-call timeout on top of the returned context (mirrors tunnelservice's dialTunnelService).
+func dialIcmpService() (*grpc.ClientConn, context.Context, context.CancelFunc, error) {
+	dir, err := executableDir()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	token, err := hutils.ReadServiceToken(dir, "icmp")
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read icmp service token: %w", err)
+	}
+	conn, err := grpc.Dial(icmpServiceAddress, grpc.WithInsecure())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", token)
+	return conn, ctx, nil, nil
+}
+
 // pingHelper calls a real, side-effect-free RPC (CloseSession on a session id that can't exist)
 // to confirm something implementing IcmpService is actually listening and responding - not just
 // that the port happens to be occupied.
 func pingHelper() error {
-	conn, err := grpc.Dial(icmpServiceAddress, grpc.WithInsecure())
+	conn, ctx, _, err := dialIcmpService()
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
 	c := NewIcmpServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	_, err = c.CloseSession(ctx, &CloseSessionRequest{SessionId: "__liveness_probe__"})
 	return err
@@ -110,11 +141,10 @@ func isElevationDeclined(err error) bool {
 }
 
 func getIcmpServicePath() (string, error) {
-	exePath, err := os.Executable()
+	binFolder, err := executableDir()
 	if err != nil {
 		return "", err
 	}
-	binFolder := filepath.Dir(exePath)
 	fullPath := "HiddifyCli.exe"
 	abspath, err := filepath.Abs(filepath.Join(binFolder, fullPath))
 	if err != nil {
@@ -127,13 +157,13 @@ func getIcmpServicePath() (string, error) {
 // logged, not returned, since callers use this on process shutdown where there's nothing more
 // useful to do with a failure.
 func ExitIcmpHelper() {
-	conn, err := grpc.Dial(icmpServiceAddress, grpc.WithInsecure())
+	conn, ctx, _, err := dialIcmpService()
 	if err != nil {
 		return
 	}
 	defer conn.Close()
 	c := NewIcmpServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if _, err := c.Exit(ctx, &hcommon.Empty{}); err != nil {
 		log.Printf("icmpservice: exit request failed: %v", err)
