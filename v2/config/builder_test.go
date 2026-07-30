@@ -3,6 +3,8 @@ package config
 import (
 	"sync"
 	"testing"
+
+	"github.com/sagernet/sing-box/option"
 )
 
 // getIPs guards its ipMaps cache with ipMapsMutex; a cache hit must short-circuit the live DNS
@@ -60,5 +62,23 @@ func TestGetIPs_ConcurrentAccessNoRace(t *testing.T) {
 func TestGetIPs_NoDomains(t *testing.T) {
 	if got := getIPs(); got != nil {
 		t.Fatalf("getIPs() = %v, want nil", got)
+	}
+}
+
+// setOutbounds used to panic on tags[0] when input has zero outbounds/endpoints and Warp is
+// disabled, since tags stays empty. A degenerate/empty config should produce a selector with no
+// user outbounds, not crash the whole core.
+func TestSetOutbounds_NoOutbounds_DoesNotPanic(t *testing.T) {
+	opt := DefaultHiddifyOptions()
+	input := &option.Options{}
+	options := &option.Options{}
+	staticIPs := map[string][]string{}
+
+	err := setOutbounds(options, input, opt, &staticIPs)
+	if err != nil {
+		t.Fatalf("setOutbounds returned an error for an empty config: %v", err)
+	}
+	if len(options.Outbounds) == 0 {
+		t.Fatal("expected setOutbounds to still produce the selector/direct outbounds")
 	}
 }

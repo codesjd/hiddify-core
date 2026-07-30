@@ -299,7 +299,12 @@ func setOutbounds(options *option.Options, input *option.Options, opt *HiddifyOp
 			InterruptExistConnections: true,
 		},
 	}
-	defaultSelect := tags[0]
+	// tags can be empty (e.g. a config with zero user outbounds and Warp disabled) - fall back
+	// to an empty default rather than panicking on tags[0].
+	var defaultSelect string
+	if len(tags) > 0 {
+		defaultSelect = tags[0]
+	}
 
 	for _, tag := range tags {
 		if strings.Contains(tag, "§default§") {
