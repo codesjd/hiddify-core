@@ -12,6 +12,7 @@ import (
 	hcommon "github.com/hiddify/hiddify-core/v2/hcommon"
 	hutils "github.com/hiddify/hiddify-core/v2/hutils"
 	grpc "google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 const tunnelServicePort uint16 = 18020
@@ -23,6 +24,24 @@ var (
 
 func isSupportedOS() bool {
 	return runtime.GOOS == "windows" || runtime.GOOS == "linux"
+}
+
+// dialTunnelService dials the tunnel helper's gRPC server and returns a
+// context carrying the auth token as outgoing metadata, timed out after
+// timeout. Callers must Close() the returned conn and call the returned
+// cancel func.
+func dialTunnelService(timeout time.Duration) (*grpc.ClientConn, context.Context, context.CancelFunc, error) {
+	token, err := hutils.ReadServiceToken(getCurrentExecutableDirectory(), "tunnel")
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read tunnel service token: %w", err)
+	}
+	conn, err := grpc.Dial(tunnelServiceAddress, grpc.WithInsecure())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", token)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	return conn, ctx, cancel, nil
 }
 
 func ActivateTunnelService(opt *TunnelStartRequest) error {
@@ -63,14 +82,14 @@ func startTunnelRequest(opt *TunnelStartRequest, installService bool) (bool, err
 		}
 		return false, fmt.Errorf("service is not running")
 	}
-	conn, err := grpc.Dial(tunnelServiceAddress, grpc.WithInsecure())
+	conn, ctx, cancel, err := dialTunnelService(time.Second * 5)
 	if err != nil {
 		log.Printf("did not connect: %v", err)
+		return false, err
 	}
 	defer conn.Close()
-	c := NewTunnelServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
+	c := NewTunnelServiceClient(conn)
 	_, _ = c.Stop(ctx, &hcommon.Empty{})
 	res, err := c.Start(ctx, opt)
 	if err != nil {
@@ -87,15 +106,14 @@ func startTunnelRequest(opt *TunnelStartRequest, installService bool) (bool, err
 }
 
 func stopTunnelRequest() error {
-	conn, err := grpc.Dial(tunnelServiceAddress, grpc.WithInsecure())
+	conn, ctx, cancel, err := dialTunnelService(time.Second * 20)
 	if err != nil {
 		log.Printf("did not connect: %v", err)
 		return err
 	}
 	defer conn.Close()
-	c := NewTunnelServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 	defer cancel()
+	c := NewTunnelServiceClient(conn)
 
 	res, err := c.Stop(ctx, &hcommon.Empty{})
 	if err != nil {
@@ -108,15 +126,14 @@ func stopTunnelRequest() error {
 }
 
 func ExitTunnelService() (bool, error) {
-	conn, err := grpc.Dial(tunnelServiceAddress, grpc.WithInsecure())
+	conn, ctx, cancel, err := dialTunnelService(time.Second * 1)
 	if err != nil {
 		log.Printf("did not connect: %v", err)
 		return false, err
 	}
 	defer conn.Close()
-	c := NewTunnelServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
 	defer cancel()
+	c := NewTunnelServiceClient(conn)
 
 	res, err := c.Exit(ctx, &hcommon.Empty{})
 	if res != nil {

@@ -1,14 +1,22 @@
 package tunnelservice
 
 import (
+	"context"
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kardianos/service"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+
+	hutils "github.com/hiddify/hiddify-core/v2/hutils"
 )
 
 var logger service.Logger
@@ -19,13 +27,13 @@ type hiddifyNext struct {
 
 var port int = 18020
 
-func (m *hiddifyNext) StartTunnelGrpcServer(listenAddressG string) (*grpc.Server, error) {
+func (m *hiddifyNext) StartTunnelGrpcServer(listenAddressG string, token string) (*grpc.Server, error) {
 	lis, err := net.Listen("tcp", listenAddressG)
 	if err != nil {
 		log.Printf("failed to listen: %v", err)
 		return nil, err
 	}
-	s := grpc.NewServer()
+	s := grpc.NewServer(grpc.ChainUnaryInterceptor(tokenAuthInterceptor(token)))
 	m.tunnelService = &TunnelService{}
 	RegisterTunnelServiceServer(s, m.tunnelService)
 
@@ -40,8 +48,24 @@ func (m *hiddifyNext) StartTunnelGrpcServer(listenAddressG string) (*grpc.Server
 	return s, nil
 }
 
+// tokenAuthInterceptor rejects any unary RPC whose incoming gRPC metadata
+// "token" key doesn't match expected, using a constant-time comparison.
+func tokenAuthInterceptor(expected string) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok || subtle.ConstantTimeCompare([]byte(strings.Join(md.Get("token"), "")), []byte(expected)) != 1 {
+			return nil, status.Error(codes.Unauthenticated, "missing or invalid token")
+		}
+		return handler(ctx, req)
+	}
+}
+
 func (m *hiddifyNext) Start(s service.Service) error {
-	_, err := m.StartTunnelGrpcServer(fmt.Sprintf("127.0.0.1:%d", port))
+	token, err := hutils.GenerateAndPersistServiceToken(getCurrentExecutableDirectory(), "tunnel")
+	if err != nil {
+		return err
+	}
+	_, err = m.StartTunnelGrpcServer(fmt.Sprintf("127.0.0.1:%d", port), token)
 	return err
 }
 
