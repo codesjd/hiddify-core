@@ -37,7 +37,7 @@ func isEnable(id string) bool {
 }
 
 func loadExtension(factory ExtensionFactory) error {
-	if !isEnable(factory.Id) {
+	if !factory.AlwaysEnabled && !isEnable(factory.Id) {
 		return fmt.Errorf("Extension with ID %s is not enabled", factory.Id)
 	}
 	extension := factory.Builder()
@@ -71,7 +71,7 @@ func (s *extensionService) Init() error {
 			}
 		}
 
-		if data.Enable {
+		if data.Enable || factory.AlwaysEnabled {
 			if err := loadExtension(factory); err != nil {
 				return fmt.Errorf("failed to load extension %s: %w", data.Id, err)
 			}
@@ -122,5 +122,5 @@ func (s *extensionService) OnMainServiceClose() error {
 }
 
 func init() {
-	// service_manager.Register(&extensionService{})
+	service_manager.Register(&extensionService{})
 }
