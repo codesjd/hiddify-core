@@ -13,9 +13,10 @@ import (
 // Windows, an unelevated process can't open xicmp's unprivileged ("dgram") ICMP sockets at all, so
 // without this override every xicmp config simply fails outright for the overwhelming majority of
 // users, who don't run the app as Administrator. There's nothing to opt into - the helper it wires
-// up is itself lazy (icmpservice.EnsureIcmpHelperRunning only elevates, prompting UAC, the first
-// time an xicmp outbound is actually dialed), so an unconditional wire-up has no cost for users who
-// never touch xicmp.
+// up is itself lazy (icmpservice.EnsureIcmpHelperRunning only elevates, prompting UAC, when no
+// already-running helper is reachable - which in practice means the first xicmp dial after a cold
+// start, and again after every idleTimeout-driven self-exit, see icmp_platform_service.go), so an
+// unconditional wire-up has no cost for users who never touch xicmp.
 //
 // This intentionally bypasses the extension/service_manager framework (which previously carried
 // this same assignment in extension/system/admin_service_vpn/admin_icmp_service.go): that path
