@@ -78,7 +78,9 @@ func BuildConfig(ctx context.Context, hopts *HiddifyOptions, inputOpt *ReadOptio
 	setExperimental(&options, hopts)
 
 	setLog(&options, hopts)
-	setInbound(&options, hopts)
+	if err := setInbound(&options, hopts); err != nil {
+		return nil, err
+	}
 	staticIPs := make(map[string][]string)
 	// staticIPs["api.cloudflareclient.com"] = []string{"104.16.192.82", "2606:4700::6810:1854", getRandomWarpIP()}
 	// setNTP(&options)
@@ -435,7 +437,13 @@ func isIPv6Supported() bool {
 	_, err := net.ResolveIPAddr("ip6", "::1")
 	return err == nil
 }
-func setInbound(options *option.Options, hopt *HiddifyOptions) {
+// validTUNStacks is the set of sing-tun stack identifiers accepted by the Go core, matching the
+// Dart-side TunImplementation enum (lib/singbox/model/singbox_config_enum.dart:112-115). The Dart
+// UI can only ever send one of these, but imported/hand-edited config JSON is not enum-constrained,
+// so this is validated here at the point an untrusted TUNStack value is consumed.
+var validTUNStacks = map[string]bool{"mixed": true, "system": true, "gvisor": true}
+
+func setInbound(options *option.Options, hopt *HiddifyOptions) error {
 	// var inboundDomainStrategy option.DomainStrategy
 	// if !opt.ResolveDestination {
 	// 	inboundDomainStrategy = option.DomainStrategy(dns.DomainStrategyAsIS)
@@ -444,12 +452,16 @@ func setInbound(options *option.Options, hopt *HiddifyOptions) {
 	// }
 	ipv6Enable := isIPv6Supported()
 	if hopt.EnableTun {
+		if !validTUNStacks[hopt.TUNStack] {
+			return fmt.Errorf("invalid tun-implementation (stack) %q: must be one of mixed, system, gvisor", hopt.TUNStack)
+		}
 
 		opts := option.TunInboundOptions{
-			Stack:       hopt.TUNStack,
-			MTU:         hopt.MTU,
-			AutoRoute:   true,
-			StrictRoute: hopt.StrictRoute,
+			Stack:         hopt.TUNStack,
+			MTU:           hopt.MTU,
+			AutoRoute:     true,
+			StrictRoute:   hopt.StrictRoute,
+			InterfaceName: "HiddifyTun",
 
 			// EndpointIndependentNat: true,
 			// GSO:                    runtime.GOOS != "windows",
@@ -565,6 +577,7 @@ func setInbound(options *option.Options, hopt *HiddifyOptions) {
 			)
 		}
 	}
+	return nil
 }
 
 // setRoutingOptions assembles options.Route and options.DNS.Rules. It calls each of the

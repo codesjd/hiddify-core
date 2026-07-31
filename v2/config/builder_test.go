@@ -82,3 +82,48 @@ func TestSetOutbounds_NoOutbounds_DoesNotPanic(t *testing.T) {
 		t.Fatal("expected setOutbounds to still produce the selector/direct outbounds")
 	}
 }
+
+// setInbound must set an explicit, fixed InterfaceName on the TUN inbound so the adapter can be
+// reliably identified across runs (firewall rules, diagnostics, support instructions), and must
+// pass through a valid TUNStack unchanged.
+func TestSetInbound_TUN_ValidStack_SetsInterfaceName(t *testing.T) {
+	opt := DefaultHiddifyOptions()
+	opt.EnableTun = true
+	opt.TUNStack = "gvisor"
+	options := &option.Options{}
+
+	if err := setInbound(options, opt); err != nil {
+		t.Fatalf("setInbound returned an error for a valid stack: %v", err)
+	}
+
+	var tunOpts *option.TunInboundOptions
+	for _, inbound := range options.Inbounds {
+		if inbound.Tag == InboundTUNTag {
+			tunOpts = inbound.Options.(*option.TunInboundOptions)
+		}
+	}
+	if tunOpts == nil {
+		t.Fatal("expected a tun inbound to be added")
+	}
+	if tunOpts.Stack != "gvisor" {
+		t.Fatalf("tunOpts.Stack = %q, want %q", tunOpts.Stack, "gvisor")
+	}
+	if tunOpts.InterfaceName != "HiddifyTun" {
+		t.Fatalf("tunOpts.InterfaceName = %q, want %q", tunOpts.InterfaceName, "HiddifyTun")
+	}
+}
+
+// An unrecognized TUNStack (e.g. from an imported/hand-edited config JSON, which is not
+// enum-constrained the way the Dart UI is) must be rejected at this boundary rather than reaching
+// sing-tun's own adapter construction unchecked.
+func TestSetInbound_TUN_InvalidStack_ReturnsError(t *testing.T) {
+	opt := DefaultHiddifyOptions()
+	opt.EnableTun = true
+	opt.TUNStack = "bogus"
+	options := &option.Options{}
+
+	err := setInbound(options, opt)
+	if err == nil {
+		t.Fatal("expected setInbound to return an error for an invalid TUNStack, got nil")
+	}
+}
