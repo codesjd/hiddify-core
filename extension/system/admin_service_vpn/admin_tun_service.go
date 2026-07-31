@@ -19,7 +19,7 @@ var _ ex.Extension = (*AdminServiceExtension)(nil)
 type AdminServiceExtension struct {
 	ex.Base[AdminServiceExtensionData]
 	tunInboundOptions *option.TunInboundOptions
-	socksOptions      *option.SocksInboundOptions
+	mixedOptions      *option.HTTPMixedInboundOptions
 }
 
 func (b *AdminServiceExtension) OnMainServicePreStart(singconfig *option.Options) error {
@@ -30,13 +30,13 @@ func (b *AdminServiceExtension) OnMainServicePreStart(singconfig *option.Options
 
 	for _, inb := range singconfig.Inbounds {
 		if inb.Type == C.TypeTun {
-			if d, ok := inb.Options.(option.TunInboundOptions); ok {
-				b.tunInboundOptions = &d
+			if d, ok := inb.Options.(*option.TunInboundOptions); ok {
+				b.tunInboundOptions = d
 			}
 		} else {
-			if inb.Type == C.TypeSOCKS {
-				if d, ok := inb.Options.(option.SocksInboundOptions); ok {
-					b.socksOptions = &d
+			if inb.Type == C.TypeMixed {
+				if d, ok := inb.Options.(*option.HTTPMixedInboundOptions); ok {
+					b.mixedOptions = d
 				}
 			}
 			newInbounds = append(newInbounds, inb)
@@ -48,30 +48,28 @@ func (b *AdminServiceExtension) OnMainServicePreStart(singconfig *option.Options
 }
 
 func (b *AdminServiceExtension) OnMainServiceStart() error {
-	if b.tunInboundOptions == nil || b.socksOptions == nil {
+	if b.tunInboundOptions == nil || b.mixedOptions == nil {
 		return nil
 	}
 	username := ""
 	password := ""
-	if b.socksOptions.Users != nil && len(b.socksOptions.Users) > 0 {
-		username = b.socksOptions.Users[0].Username
-		password = b.socksOptions.Users[0].Password
+	if len(b.mixedOptions.Users) > 0 {
+		username = b.mixedOptions.Users[0].Username
+		password = b.mixedOptions.Users[0].Password
 	}
-	tunnelservice.ActivateTunnelService(&tunnelservice.TunnelStartRequest{
-		// Ipv6:                   len(b.tunInboundOptions.Inet6Address) > 0,
-		Ipv6:                   true,
-		ServerPort:             int32(b.socksOptions.ListenPort),
+	return tunnelservice.ActivateTunnelService(&tunnelservice.TunnelStartRequest{
+		Ipv6:                   len(b.tunInboundOptions.Address) > 1,
+		ServerPort:             int32(b.mixedOptions.ListenPort),
 		ServerUsername:         username,
 		ServerPassword:         password,
 		StrictRoute:            b.tunInboundOptions.StrictRoute,
 		Stack:                  b.tunInboundOptions.Stack,
 		EndpointIndependentNat: b.tunInboundOptions.EndpointIndependentNat,
 	})
-	return nil
 }
 
 func (b *AdminServiceExtension) OnMainServiceClose() error {
-	if b.tunInboundOptions == nil || b.socksOptions == nil {
+	if b.tunInboundOptions == nil || b.mixedOptions == nil {
 		return nil
 	}
 	return tunnelservice.DeactivateTunnelService()
@@ -84,10 +82,11 @@ func NewAdminServiceExtension() ex.Extension {
 func init() {
 	ex.RegisterExtension(
 		ex.ExtensionFactory{
-			Id:          "github.com/hiddify/hiddify-core/extension/system/admin_service_vpn", // Package identifier
-			Title:       "Admin Service",                                                      // Display title of the extension
-			Description: "System Extension",                                                   // Brief description of the extension
-			Builder:     NewAdminServiceExtension,                                             // Function to create a new instance
+			Id:            "github.com/hiddify/hiddify-core/extension/system/admin_service_vpn", // Package identifier
+			Title:         "Admin Service",                                                      // Display title of the extension
+			Description:   "System Extension",                                                   // Brief description of the extension
+			Builder:       NewAdminServiceExtension,                                             // Function to create a new instance
+			AlwaysEnabled: true,
 		},
 	)
 }
