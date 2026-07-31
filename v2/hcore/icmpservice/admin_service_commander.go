@@ -33,6 +33,12 @@ var (
 	elevationDeclined bool // cached for the process lifetime so a retry doesn't re-prompt UAC after a denial
 )
 
+// helperStartupTimeout covers UAC dialog render + a human noticing/clicking "Yes" + HiddifyCli.exe's
+// Go runtime cold-starting + its gRPC listener coming up - 5s (the previous value) routinely wasn't
+// enough for the human-reaction-time part alone, causing the first xicmp connection after a cold
+// start to fail even though the helper would come up moments later.
+const helperStartupTimeout = 45 * time.Second
+
 // EnsureIcmpHelperRunning makes sure the elevated ICMP helper is reachable at
 // 127.0.0.1:<icmpServicePort>, elevating and launching it (triggering a UAC prompt) if it isn't
 // already. Idempotent: safe to call before every xicmp dial attempt.
@@ -58,7 +64,7 @@ func EnsureIcmpHelperRunning() error {
 		return fmt.Errorf("xicmp: failed to launch elevated helper: %w", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(helperStartupTimeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		if lastErr = pingHelper(); lastErr == nil {
