@@ -162,4 +162,9 @@ type ExtensionFactory struct {
 	Title       string
 	Description string
 	Builder     func() Extension
+	// AlwaysEnabled, when true, makes this extension load unconditionally,
+	// bypassing the per-extension DB "Enable" toggle. Use only for
+	// extensions with no user-facing enable/disable UI, where the extension
+	// itself is a bug fix / required behavior rather than an opt-in add-on.
+	AlwaysEnabled bool
 }

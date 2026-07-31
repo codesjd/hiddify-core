@@ -29,7 +29,7 @@ func (h *HiddifyInstance) readStatus(prev *SystemInfo) *SystemInfo {
 	message.Goroutines = int32(runtime.NumGoroutine())
 	// message.ConnectionsOut = int32(conntrack.Count())
 
-	if ss := h.StartedService; ss != nil {
+	if ss := h.StartedService.Load(); ss != nil {
 		status := ss.ReadStatus()
 		message.DownlinkTotal = status.DownlinkTotal
 		message.UplinkTotal = status.UplinkTotal

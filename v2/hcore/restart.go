@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/hiddify/hiddify-core/v2/config"
-	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 )
 
@@ -30,7 +29,19 @@ func Restart(ctx context.Context, in *StartRequest) (coreResponse *CoreInfoRespo
 		return resp, err
 	}
 
-	if C.IsAndroid && static.HiddifyOptions.EnableTun {
+	// TUN teardown (interface/route/WFP session close) isn't guaranteed complete the instant
+	// Stop() returns - this settling window was previously Android-only, but the same
+	// symptom (a config that works once, then every subsequent reconnect in TUN mode fails,
+	// with no crash involved) reproduces on Windows too: StartService() below recreates the
+	// TUN interface immediately after Stop(), racing the OS's own teardown of the one Stop()
+	// just closed.
+	static.optionsLock.Lock()
+	opts := static.HiddifyOptions
+	static.optionsLock.Unlock()
+	// opts is nil on a never-configured instance (StartService below will return the
+	// standard "HiddifyOptions not initialized" error) - treat that as EnableTun=false
+	// rather than dereferencing a nil pointer.
+	if opts != nil && opts.EnableTun {
 		select {
 		case <-ctx.Done():
 			return SetCoreStatus(CoreStates_STOPPED, MessageType_INSTANCE_NOT_STARTED, "restart cancelled"), nil

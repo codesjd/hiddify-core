@@ -9,12 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sagernet/sing-box/experimental/libbox"
 	"golang.org/x/sys/unix"
 )
 
 func RedirectStderr(path string) error {
-	return libbox.RedirectStderr(path)
+	return redirectStderrToFile(path)
 }
 
 func IsAdmin() bool {

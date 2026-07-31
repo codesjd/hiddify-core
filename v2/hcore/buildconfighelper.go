@@ -37,7 +37,10 @@ func BuildConfig(ctx context.Context, in *StartRequest) (*option.Options, error)
 
 		// Log(LogLevel_DEBUG, LogType_CORE, "Building config ", string(hcontent))
 		// Log(LogLevel_DEBUG, LogType_CORE, "Building config ")
-		return config.BuildConfig(ctx, static.HiddifyOptions, readOpt)
+		static.optionsLock.Lock()
+		opts := static.HiddifyOptions
+		static.optionsLock.Unlock()
+		return config.BuildConfig(ctx, opts, readOpt)
 	}
 	return config.ReadSingOptions(ctx, readOpt)
 
@@ -58,7 +61,10 @@ func Parse(ctx context.Context, in *ParseRequest) (*ParseResponse, error) {
 		path = in.ConfigPath
 	}
 
-	config, err := config.ParseConfigBytes(ctx, &config.ReadOptions{Content: in.Content, Path: path}, true, static.HiddifyOptions, false)
+	static.optionsLock.Lock()
+	opts := static.HiddifyOptions
+	static.optionsLock.Unlock()
+	config, err := config.ParseConfigBytes(ctx, &config.ReadOptions{Content: in.Content, Path: path}, true, opts, false)
 	if err != nil {
 		return &ParseResponse{
 			ResponseCode: hcommon.ResponseCode_FAILED,
@@ -86,6 +92,9 @@ func (s *CoreService) ChangeHiddifySettings(ctx context.Context, in *ChangeHiddi
 }
 
 func ChangeHiddifySettings(in *ChangeHiddifySettingsRequest, insert bool) (*CoreInfoResponse, error) {
+	static.optionsLock.Lock()
+	defer static.optionsLock.Unlock()
+
 	static.HiddifyOptions = config.DefaultHiddifyOptions()
 	defer func() {
 		switch static.HiddifyOptions.LogLevel {
@@ -147,10 +156,13 @@ func GenerateConfig(ctx context.Context, in *GenerateConfigRequest) (*GenerateCo
 		Log(LogLevel_FATAL, LogType_CONFIG, err.Error())
 		StopAndAlert(MessageType_UNEXPECTED_ERROR, err.Error())
 	})
+	static.optionsLock.Lock()
 	if static.HiddifyOptions == nil {
 		static.HiddifyOptions = config.DefaultHiddifyOptions()
 	}
-	config, err := config.ParseBuildConfigBytes(ctx, static.HiddifyOptions, &config.ReadOptions{Path: in.Path})
+	opts := static.HiddifyOptions
+	static.optionsLock.Unlock()
+	config, err := config.ParseBuildConfigBytes(ctx, opts, &config.ReadOptions{Path: in.Path})
 	if err != nil {
 		return nil, err
 	}

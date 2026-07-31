@@ -1,0 +1,82 @@
+syntax = "proto3";
+import "v2/hcommon/common.proto";
+package icmpservice;
+
+option go_package = "github.com/hiddify/hiddify-core/v2/hcore/icmpservice";
+option java_package = "com.hiddify.core.api.v2.hcore.icmpservice";
+
+// IcmpService lets an unprivileged process on Windows use xicmp's unprivileged ("dgram")
+// ICMP mode, which the OS itself only allows to elevated (Administrator) processes. A separate,
+// on-demand-elevated instance of HiddifyCli.exe hosts this service; the main (unelevated)
+// process forwards ICMP reads/writes to it over loopback gRPC instead of opening the sockets
+// itself. Every RPC is scoped to a session (one real OS ICMP socket per session, opened by
+// OpenSession and released by CloseSession) so multiple xicmp outbounds can be proxied
+// concurrently without sharing state.
+service IcmpService {
+    rpc OpenSession(OpenSessionRequest) returns (OpenSessionResponse);
+    rpc ReadFrom(ReadFromRequest) returns (ReadFromResponse);
+    rpc WriteTo(WriteToRequest) returns (WriteToResponse);
+    rpc SetDeadlines(SetDeadlinesRequest) returns (hcommon.Empty);
+    rpc CloseSession(CloseSessionRequest) returns (hcommon.Empty);
+    rpc Exit(hcommon.Empty) returns (hcommon.Empty);
+}
+
+enum Family {
+    V4 = 0;
+    V6 = 1;
+}
+
+message OpenSessionRequest {
+    Family family = 1;
+}
+
+message OpenSessionResponse {
+    string session_id = 1;
+    string error = 2;
+}
+
+message ReadFromRequest {
+    string session_id = 1;
+    int32 max_bytes = 2;
+}
+
+message ReadFromResponse {
+    bytes data = 1;
+    string addr_ip = 2; // source IP only - ICMP addressing has no port
+    bool timed_out = 3;
+    string error = 4;
+}
+
+message WriteToRequest {
+    string session_id = 1;
+    bytes data = 2;
+    string addr_ip = 3; // destination IP only - ICMP addressing has no port
+}
+
+message WriteToResponse {
+    int32 n = 1;
+    string error = 2;
+}
+
+message SetDeadlinesRequest {
+    string session_id = 1;
+    // Each deadline needs 3 distinct states, not 2: "leave unchanged" (this setter wasn't
+    // called - has_*_deadline false), "clear" (net.Conn.SetReadDeadline(time.Time{}), meaning
+    // block forever - has_*_deadline true, clear_*_deadline true), and "set to an absolute time"
+    // (has_*_deadline true, clear_*_deadline false, *_deadline_unix_nano holds
+    // time.Time.UnixNano()). A zero time.Time{} does NOT UnixNano() to 0 (it's year 1, not the
+    // Unix epoch) and does not survive a UnixNano()/time.Unix() round-trip back to something
+    // IsZero() reports true for - so "clear" must be its own explicit flag, not inferred from a
+    // zero nanosecond value, or a real "no deadline" request would silently become "deadline
+    // already expired in 1970" and every subsequent read would fail instantly.
+    bool has_read_deadline = 2;
+    bool clear_read_deadline = 3;
+    int64 read_deadline_unix_nano = 4;
+    bool has_write_deadline = 5;
+    bool clear_write_deadline = 6;
+    int64 write_deadline_unix_nano = 7;
+}
+
+message CloseSessionRequest {
+    string session_id = 1;
+}

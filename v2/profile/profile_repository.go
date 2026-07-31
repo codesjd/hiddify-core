@@ -73,7 +73,7 @@ func (s *ProfileRepositoryServer) DeleteProfile(ctx context.Context, req *Profil
 	default:
 		profile, err1 := s.GetProfile(ctx, req)
 
-		if profile.Profile == nil {
+		if err1 != nil || profile == nil || profile.Profile == nil {
 			err = fmt.Errorf("error deleting profile: %v", err1)
 		} else {
 			err = DeleteById(profile.Profile.Id)
@@ -102,7 +102,7 @@ func (s *ProfileRepositoryServer) SetActiveProfile(ctx context.Context, req *Pro
 		var profile *ProfileResponse
 		profile, err = s.GetProfile(ctx, req)
 
-		if profile.Profile == nil {
+		if err != nil || profile == nil || profile.Profile == nil {
 			err = fmt.Errorf("error setting profile as active: %v", err)
 		} else {
 			err = SetActiveProfile(profile.Profile)
